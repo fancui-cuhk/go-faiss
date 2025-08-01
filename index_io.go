@@ -34,7 +34,7 @@ func ReadIndex(filename string, ioflags int) (*IndexImpl, error) {
 	return &IndexImpl{&idx}, nil
 }
 
-// [DIST] WriteIndex writes an index to files.
+// [DIST] WriteIndexDist writes an index to files.
 func WriteIndexDist(idx Index, main_filename string) error {
 	cfname := C.CString(main_filename)
 	defer C.free(unsafe.Pointer(cfname))
@@ -44,7 +44,7 @@ func WriteIndexDist(idx Index, main_filename string) error {
 	return nil
 }
 
-// [DIST] ReadIndex reads an index from file.
+// [DIST] ReadIndexDist reads an index from file.
 func ReadIndexDist(main_filename string, ioflags int) (*IndexImpl, error) {
 	cfname := C.CString(main_filename)
 	defer C.free(unsafe.Pointer(cfname))
