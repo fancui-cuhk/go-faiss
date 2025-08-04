@@ -111,6 +111,56 @@ func (idx *faissIndex) AddWithIDs(x []float32, xids []int64) error {
 	return nil
 }
 
+func (idx *faissIndex) SelectClusters(nprobe int64, x []float32) (
+	distances []float32, labels []int64, file_ids []int64, err error,
+) {
+	n := len(x) / idx.D()
+	distances = make([]float32, int64(n) * nprobe)
+	labels = make([]int64, int64(n) * nprobe)
+	file_ids = make([]int64, int64(n) * nprobe)
+	if c := C.faiss_select_clusters(
+		idx.idx,
+		C.idx_t(n),
+		C.size_t(nprobe),
+		(*C.float)(&x[0]),
+		(*C.float)(&distances[0]),
+		(*C.idx_t)(&labels[0]),
+		(*C.idx_t)(&file_ids[0]),
+	); c != 0 {
+		err = getLastError()
+	}
+	return distances, labels, file_ids, err
+}
+
+func (idx *faissIndex) ProbeClusters(
+		x []float32,
+		k int64,
+		nclusters int64,
+		cluster_ids []int64,
+		file_ids []int64,
+		centroid_dis []float32) (
+	distances []float32, labels []int64, err error,
+) {
+	n := len(x) / idx.D()
+	distances = make([]float32, int64(n) * k)
+	labels = make([]int64, int64(n) * k)
+	if c := C.faiss_probe_clusters(
+		idx.idx,
+		C.idx_t(n),
+		(*C.float)(&x[0]),
+		C.idx_t(k),
+		C.size_t(nclusters),
+		(*C.idx_t)(&cluster_ids[0]),
+		(*C.idx_t)(&file_ids[0]),
+		(*C.float)(&centroid_dis[0]),
+		(*C.float)(&distances[0]),
+		(*C.idx_t)(&labels[0]),
+	); c != 0 {
+		err = getLastError()
+	}
+	return distances, labels, err
+}
+
 func (idx *faissIndex) Search(x []float32, k int64) (
 	distances []float32, labels []int64, err error,
 ) {
