@@ -111,7 +111,7 @@ func (idx *faissIndex) AddWithIDs(x []float32, xids []int64) error {
 	return nil
 }
 
-func (idx *faissIndex) SelectClusters(nprobe int64, x []float32) (
+func (idx *faissIndex) SelectClusters(x []float32, nprobe int64) (
 	distances []float32, labels []int64, file_ids []int64, err error,
 ) {
 	n := len(x) / idx.D()
