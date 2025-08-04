@@ -36,6 +36,21 @@ type Index interface {
 	// AddWithIDs is like Add, but stores xids instead of sequential IDs.
 	AddWithIDs(x []float32, xids []int64) error
 
+	// SelectClusters performs the first half of an IVF search.
+	// Returns the cluster IDs, corresponding file IDs, and distances to selected centroids.
+	SelectClusters(x []float32, nprobe int64) (
+			distances []float32,
+			labels []int64,
+			file_ids []int64, 
+			err error)
+
+	// ProbeClusters performs the second half of an IVF search.
+	// Returns the final kNN IDs and distances -- like Search.
+	ProbeClusters(x []float32, k int64, nclusters int64, cluster_ids []int64, file_ids []int64, centroid_dis []float32) (
+			distances []float32,
+			labels []int64,
+			err error)
+
 	// Search queries the index with the vectors in x.
 	// Returns the IDs of the k nearest neighbors for each query vector and the
 	// corresponding distances.
