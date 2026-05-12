@@ -54,3 +54,23 @@ func ReadIndexDist(main_filename string, ioflags int) (*IndexImpl, error) {
 	}
 	return &IndexImpl{&idx}, nil
 }
+
+// [DIST] GetListToFileMapping retrieves the cluster-to-file mapping from IndexIVF.
+// Returns a slice where index is cluster_id and value is file_id.
+func GetListToFileMapping(idx Index) ([]int64, error) {
+	var listToFile *C.size_t
+	var nlist C.size_t
+	
+	if c := C.faiss_get_list_to_file_mapping(idx.cPtr(), &listToFile, &nlist); c != 0 {
+		return nil, getLastError()
+	}
+	
+	// Convert C array to Go slice
+	goSlice := make([]int64, int(nlist))
+	cSlice := unsafe.Slice(listToFile, int(nlist))
+	for i := 0; i < int(nlist); i++ {
+		goSlice[i] = int64(cSlice[i])
+	}
+	
+	return goSlice, nil
+}
