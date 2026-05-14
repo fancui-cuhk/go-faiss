@@ -46,7 +46,8 @@ type Index interface {
 
 	// ProbeClusters performs the second half of an IVF search.
 	// Returns the final kNN IDs and distances -- like Search.
-	ProbeClusters(x []float32, k int64, nclusters int64, cluster_ids []int64, file_ids []int64, centroid_dis []float32, invlistPath string) (
+	// Inverted-list shards must live alongside the distributed header (same path prefix as read_index_dist).
+	ProbeClusters(x []float32, k int64, nclusters int64, cluster_ids []int64, file_ids []int64, centroid_dis []float32) (
 			distances []float32,
 			labels []int64,
 			err error)
@@ -153,18 +154,13 @@ func (idx *faissIndex) ProbeClusters(
 		nclusters int64,
 		cluster_ids []int64,
 		file_ids []int64,
-		centroid_dis []float32,
-		invlistPath string) (
+		centroid_dis []float32) (
 	distances []float32, labels []int64, err error,
 ) {
 	n := len(x) / idx.D()
-	distances = make([]float32, int64(n) * k)
-	labels = make([]int64, int64(n) * k)
-	
-	// Convert Go string to C string
-	cInvlistPath := C.CString(invlistPath)
-	defer C.free(unsafe.Pointer(cInvlistPath))
-	
+	distances = make([]float32, int64(n)*k)
+	labels = make([]int64, int64(n)*k)
+
 	if c := C.faiss_probe_clusters(
 		idx.idx,
 		C.idx_t(n),
@@ -176,7 +172,6 @@ func (idx *faissIndex) ProbeClusters(
 		(*C.float)(&centroid_dis[0]),
 		(*C.float)(&distances[0]),
 		(*C.idx_t)(&labels[0]),
-		cInvlistPath,
 	); c != 0 {
 		err = getLastError()
 	}
