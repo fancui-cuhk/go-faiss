@@ -161,10 +161,6 @@ func (idx *faissIndex) ProbeClusters(
 	distances = make([]float32, int64(n)*k)
 	labels = make([]int64, int64(n)*k)
 
-	// libfaiss_c builds in the wild may still expose the legacy trailing invlist_path
-	// argument; pass "" so Faiss resolves shards as <header_path>_invlists_<id>.
-	cInv := C.CString("")
-	defer C.free(unsafe.Pointer(cInv))
 	if c := C.faiss_probe_clusters(
 		idx.idx,
 		C.idx_t(n),
@@ -176,7 +172,6 @@ func (idx *faissIndex) ProbeClusters(
 		(*C.float)(&centroid_dis[0]),
 		(*C.float)(&distances[0]),
 		(*C.idx_t)(&labels[0]),
-		cInv,
 	); c != 0 {
 		err = getLastError()
 	}
