@@ -39,17 +39,18 @@ type Index interface {
 	// SelectClusters performs the first half of an IVF search.
 	// Returns the cluster IDs, corresponding file IDs, and distances to selected centroids.
 	SelectClusters(x []float32, nprobe int64) (
-			distances []float32,
-			labels []int64,
-			file_ids []int64, 
-			err error)
+		distances []float32,
+		labels []int64,
+		file_ids []int64,
+		err error)
 
 	// ProbeClusters performs the second half of an IVF search.
 	// invlistBasePath overrides the directory/prefix for invlist shard files (empty = use index fname).
+	// Uses DefaultSeekGapBytes and discards I/O stats.
 	ProbeClusters(x []float32, k int64, nclusters int64, cluster_ids []int64, file_ids []int64, centroid_dis []float32, invlistBasePath string) (
-			distances []float32,
-			labels []int64,
-			err error)
+		distances []float32,
+		labels []int64,
+		err error)
 
 	// Search queries the index with the vectors in x.
 	// Returns the IDs of the k nearest neighbors for each query vector and the
@@ -130,9 +131,9 @@ func (idx *faissIndex) SelectClusters(x []float32, nprobe int64) (
 	distances []float32, labels []int64, file_ids []int64, err error,
 ) {
 	n := len(x) / idx.D()
-	distances = make([]float32, int64(n) * nprobe)
-	labels = make([]int64, int64(n) * nprobe)
-	file_ids = make([]int64, int64(n) * nprobe)
+	distances = make([]float32, int64(n)*nprobe)
+	labels = make([]int64, int64(n)*nprobe)
+	file_ids = make([]int64, int64(n)*nprobe)
 	if c := C.faiss_select_clusters(
 		idx.idx,
 		C.idx_t(n),
@@ -148,41 +149,16 @@ func (idx *faissIndex) SelectClusters(x []float32, nprobe int64) (
 }
 
 func (idx *faissIndex) ProbeClusters(
-		x []float32,
-		k int64,
-		nclusters int64,
-		cluster_ids []int64,
-		file_ids []int64,
-		centroid_dis []float32,
-		invlistBasePath string) (
+	x []float32,
+	k int64,
+	nclusters int64,
+	cluster_ids []int64,
+	file_ids []int64,
+	centroid_dis []float32,
+	invlistBasePath string) (
 	distances []float32, labels []int64, err error,
 ) {
-	n := len(x) / idx.D()
-	distances = make([]float32, int64(n)*k)
-	labels = make([]int64, int64(n)*k)
-
-	var cInvPath *C.char
-	if invlistBasePath != "" {
-		cInvPath = C.CString(invlistBasePath)
-		defer C.free(unsafe.Pointer(cInvPath))
-	}
-
-	if c := C.faiss_probe_clusters(
-		idx.idx,
-		C.idx_t(n),
-		(*C.float)(&x[0]),
-		C.idx_t(k),
-		C.size_t(nclusters),
-		(*C.idx_t)(&cluster_ids[0]),
-		(*C.idx_t)(&file_ids[0]),
-		(*C.float)(&centroid_dis[0]),
-		(*C.float)(&distances[0]),
-		(*C.idx_t)(&labels[0]),
-		cInvPath,
-	); c != 0 {
-		err = getLastError()
-	}
-	return distances, labels, err
+	return ProbeClustersWithIO(idx, x, k, nclusters, cluster_ids, file_ids, centroid_dis, invlistBasePath, DefaultSeekGapBytes, nil)
 }
 
 func (idx *faissIndex) Search(x []float32, k int64) (
