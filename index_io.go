@@ -2,6 +2,7 @@ package faiss
 
 /*
 #include <stdlib.h>
+#include <faiss/c_api/Index_c.h>
 #include <faiss/c_api/index_io_c.h>
 */
 import "C"
@@ -103,4 +104,72 @@ func GetListToFileMapping(idx Index) ([]int64, error) {
 	}
 
 	return goSlice, nil
+}
+
+// IVFCopyList copies one inverted list's ids and raw codes (IVFFlat codes are
+// float32 vectors). Works for OnDiskInvertedLists.
+func IVFCopyList(idx Index, listNo int) (ids []int64, codes []byte, codeSize int, err error) {
+	var ls, cs C.size_t
+	if c := C.faiss_ivf_copy_list(idx.cPtr(), C.size_t(listNo), nil, nil, &ls, &cs); c != 0 {
+		return nil, nil, 0, getLastError()
+	}
+	codeSize = int(cs)
+	if ls == 0 {
+		return nil, nil, codeSize, nil
+	}
+	ids = make([]int64, ls)
+	codes = make([]byte, int(ls)*codeSize)
+	if c := C.faiss_ivf_copy_list(
+		idx.cPtr(),
+		C.size_t(listNo),
+		(*C.idx_t)(unsafe.Pointer(&ids[0])),
+		(*C.uint8_t)(unsafe.Pointer(&codes[0])),
+		&ls,
+		&cs,
+	); c != 0 {
+		return nil, nil, 0, getLastError()
+	}
+	return ids, codes, int(cs), nil
+}
+
+// HNSWLevel0Neighbors returns the level-0 neighbor vertex ids of i.
+func HNSWLevel0Neighbors(idx Index, i int64) ([]int64, error) {
+	buf := make([]int64, 64)
+	n, err := HNSWFillLevel0Neighbors(idx, i, buf)
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	return append([]int64(nil), buf[:n]...), nil
+}
+
+// HNSWFillLevel0Neighbors copies level-0 neighbor ids of i into buf and
+// returns how many were written. buf must be large enough (Faiss L0 is 2M).
+func HNSWFillLevel0Neighbors(idx Index, i int64, buf []int64) (int, error) {
+	if len(buf) == 0 {
+		return 0, fmt.Errorf("HNSWFillLevel0Neighbors: empty buffer")
+	}
+	var n C.size_t
+	if c := C.faiss_hnsw_copy_level0_neighbors(
+		idx.cPtr(),
+		C.idx_t(i),
+		(*C.idx_t)(unsafe.Pointer(&buf[0])),
+		C.size_t(len(buf)),
+		&n,
+	); c != 0 {
+		return 0, getLastError()
+	}
+	return int(n), nil
+}
+
+// Reconstruct returns the (possibly approximate) vector stored at key.
+func Reconstruct(idx Index, key int64) ([]float32, error) {
+	d := idx.D()
+	out := make([]float32, d)
+	if c := C.faiss_Index_reconstruct(idx.cPtr(), C.idx_t(key), (*C.float)(&out[0])); c != 0 {
+		return nil, getLastError()
+	}
+	return out, nil
 }
