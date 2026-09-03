@@ -6,6 +6,7 @@ package faiss
 */
 import "C"
 import (
+	"fmt"
 	"unsafe"
 )
 
@@ -13,7 +14,44 @@ import (
 const (
 	IOFlagMmap     = C.FAISS_IO_FLAG_MMAP
 	IOFlagReadOnly = C.FAISS_IO_FLAG_READ_ONLY
+	// IOFlagOndiskSameDir resolves the OnDiskInvertedLists data-file reference
+	// relative to the directory of the index file being read. Required for
+	// indexes built by MergeIVFOnDisk once they are copied elsewhere.
+	IOFlagOndiskSameDir = C.FAISS_IO_FLAG_ONDISK_SAME_DIR
 )
+
+// MergeIVFOnDisk merges per-slice IVF block index files into one IVF index
+// whose inverted lists are stored in ivfdataPath (OnDiskInvertedLists). The
+// trainedPath file must be an empty, trained IVF index providing the
+// quantizer; blocks must share that quantizer and hold globally assigned ids.
+// Reading the resulting outPath requires IOFlagOndiskSameDir when the file was
+// moved from where it was written.
+func MergeIVFOnDisk(trainedPath string, blockPaths []string, ivfdataPath, outPath string) error {
+	if len(blockPaths) == 0 {
+		return fmt.Errorf("MergeIVFOnDisk: no block indexes")
+	}
+	cTrained := C.CString(trainedPath)
+	defer C.free(unsafe.Pointer(cTrained))
+	cIvfdata := C.CString(ivfdataPath)
+	defer C.free(unsafe.Pointer(cIvfdata))
+	cOut := C.CString(outPath)
+	defer C.free(unsafe.Pointer(cOut))
+
+	cBlocks := make([]*C.char, len(blockPaths))
+	for i, p := range blockPaths {
+		cBlocks[i] = C.CString(p)
+		defer C.free(unsafe.Pointer(cBlocks[i]))
+	}
+	if c := C.faiss_merge_ivf_ondisk(
+		cTrained,
+		(**C.char)(unsafe.Pointer(&cBlocks[0])),
+		C.size_t(len(cBlocks)),
+		cIvfdata,
+		cOut); c != 0 {
+		return getLastError()
+	}
+	return nil
+}
 
 // WriteIndex writes an index to a file.
 func WriteIndex(idx Index, filename string) error {
