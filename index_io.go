@@ -36,17 +36,7 @@ func ReadIndex(filename string, ioflags int) (*IndexImpl, error) {
 	return &IndexImpl{&idx}, nil
 }
 
-// [DIST] WriteIndexDist writes an index to files.
-func WriteIndexDist(idx Index, main_filename string) error {
-	cfname := C.CString(main_filename)
-	defer C.free(unsafe.Pointer(cfname))
-	if c := C.faiss_write_index_fname_dist(idx.cPtr(), cfname); c != 0 {
-		return getLastError()
-	}
-	return nil
-}
-
-// [DIST] ReadIndexDist reads an index from file.
+// ReadIndexDist reads a distributed IVF header.
 func ReadIndexDist(main_filename string, ioflags int) (*IndexImpl, error) {
 	cfname := C.CString(main_filename)
 	defer C.free(unsafe.Pointer(cfname))
