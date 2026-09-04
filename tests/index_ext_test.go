@@ -1,18 +1,20 @@
 //go:build faiss_ext
 
-package faiss
+package faiss_test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	faiss "github.com/fancui-cuhk/go-faiss"
 )
 
 func TestProbeClustersSkipsUnreadLists(t *testing.T) {
 	dir := t.TempDir()
 	prefix := filepath.Join(dir, "db")
 	const d = 4
-	quant, err := NewIndexFlatL2(d)
+	quant, err := faiss.NewIndexFlatL2(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,16 +26,16 @@ func TestProbeClustersSkipsUnreadLists(t *testing.T) {
 	if err := quant.Add(cents); err != nil {
 		t.Fatal(err)
 	}
-	idx, err := NewIndexIVFFlat(quant, d, 3)
+	idx, err := faiss.NewIndexIVFFlat(quant, d, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer idx.Delete()
-	if err := SetIsTrained(idx, true); err != nil {
+	if err := faiss.SetIsTrained(idx, true); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := IVFAddCore(idx, []float32{0, 0, 0, 0}, []int64{7}, []int64{0}); err != nil {
+	if err := faiss.IVFAddCore(idx, []float32{0, 0, 0, 0}, []int64{7}, []int64{0}); err != nil {
 		t.Fatal(err)
 	}
 	big := make([]float32, d*4000)
@@ -44,7 +46,7 @@ func TestProbeClustersSkipsUnreadLists(t *testing.T) {
 		ids[i] = 1000 + int64(i)
 		lists[i] = 1
 	}
-	if err := IVFAddCore(idx, big, ids, lists); err != nil {
+	if err := faiss.IVFAddCore(idx, big, ids, lists); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 4000; i++ {
@@ -53,11 +55,11 @@ func TestProbeClustersSkipsUnreadLists(t *testing.T) {
 		ids[i] = 9000 + int64(i)
 		lists[i] = 2
 	}
-	if err := IVFAddCore(idx, big, ids, lists); err != nil {
+	if err := faiss.IVFAddCore(idx, big, ids, lists); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := WriteIndexDistGrouped(idx, prefix, [][]int{{0, 1, 2}}); err != nil {
+	if err := faiss.WriteIndexDistGrouped(idx, prefix, [][]int{{0, 1, 2}}); err != nil {
 		t.Fatal(err)
 	}
 	fi, err := os.Stat(prefix + "_invlists_0")
@@ -65,14 +67,14 @@ func TestProbeClustersSkipsUnreadLists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	header, err := ReadIndexDist(prefix, 0)
+	header, err := faiss.ReadIndexDist(prefix, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer header.Delete()
 
-	var st InvertedListsIOStats
-	dists, labels, err := ProbeClustersWithIO(
+	var st faiss.InvertedListsIOStats
+	dists, labels, err := faiss.ProbeClustersWithIO(
 		header, []float32{0, 0, 0, 0}, 1, 1,
 		[]int64{0}, []int64{0}, []float32{0},
 		"", 0, &st,
@@ -96,8 +98,8 @@ func TestProbeClustersSkipsUnreadLists(t *testing.T) {
 		t.Fatal("first probe should read the offset table")
 	}
 
-	var stMerge InvertedListsIOStats
-	if _, _, err := ProbeClustersWithIO(
+	var stMerge faiss.InvertedListsIOStats
+	if _, _, err := faiss.ProbeClustersWithIO(
 		header, []float32{0, 0, 0, 0}, 2, 2,
 		[]int64{0, 2}, []int64{0, 0}, []float32{0, 0},
 		"", 1<<30, &stMerge,
@@ -118,7 +120,7 @@ func TestProbeClustersSkipsUnreadLists(t *testing.T) {
 func writeThreeListIVF(t *testing.T, prefix string, groups [][]int) {
 	t.Helper()
 	const d = 4
-	quant, err := NewIndexFlatL2(d)
+	quant, err := faiss.NewIndexFlatL2(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,15 +131,15 @@ func writeThreeListIVF(t *testing.T, prefix string, groups [][]int) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx, err := NewIndexIVFFlat(quant, d, 3)
+	idx, err := faiss.NewIndexIVFFlat(quant, d, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer idx.Delete()
-	if err := SetIsTrained(idx, true); err != nil {
+	if err := faiss.SetIsTrained(idx, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := IVFAddCore(idx, []float32{0, 0, 0, 0}, []int64{7}, []int64{0}); err != nil {
+	if err := faiss.IVFAddCore(idx, []float32{0, 0, 0, 0}, []int64{7}, []int64{0}); err != nil {
 		t.Fatal(err)
 	}
 	big := make([]float32, d*4000)
@@ -148,7 +150,7 @@ func writeThreeListIVF(t *testing.T, prefix string, groups [][]int) {
 		ids[i] = 1000 + int64(i)
 		lists[i] = 1
 	}
-	if err := IVFAddCore(idx, big, ids, lists); err != nil {
+	if err := faiss.IVFAddCore(idx, big, ids, lists); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 4000; i++ {
@@ -157,10 +159,10 @@ func writeThreeListIVF(t *testing.T, prefix string, groups [][]int) {
 		ids[i] = 9000 + int64(i)
 		lists[i] = 2
 	}
-	if err := IVFAddCore(idx, big, ids, lists); err != nil {
+	if err := faiss.IVFAddCore(idx, big, ids, lists); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteIndexDistGrouped(idx, prefix, groups); err != nil {
+	if err := faiss.WriteIndexDistGrouped(idx, prefix, groups); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -175,18 +177,18 @@ func TestInvlistDirCache(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		header, err := ReadIndexDist(prefix, 0)
+		header, err := faiss.ReadIndexDist(prefix, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer header.Delete()
 
-		var first, second InvertedListsIOStats
-		d1, l1, err := ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, &first)
+		var first, second faiss.InvertedListsIOStats
+		d1, l1, err := faiss.ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, &first)
 		if err != nil {
 			t.Fatal(err)
 		}
-		d2, l2, err := ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, &second)
+		d2, l2, err := faiss.ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, &second)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -213,23 +215,23 @@ func TestInvlistDirCache(t *testing.T) {
 	t.Run("secondFileHasItsOwnColdTable", func(t *testing.T) {
 		prefix := filepath.Join(t.TempDir(), "db")
 		writeThreeListIVF(t, prefix, [][]int{{0}, {1, 2}})
-		header, err := ReadIndexDist(prefix, 0)
+		header, err := faiss.ReadIndexDist(prefix, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer header.Delete()
 
-		var a1, a2, b1 InvertedListsIOStats
-		if _, _, err := ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, &a1); err != nil {
+		var a1, a2, b1 faiss.InvertedListsIOStats
+		if _, _, err := faiss.ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, &a1); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, &a2); err != nil {
+		if _, _, err := faiss.ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, &a2); err != nil {
 			t.Fatal(err)
 		}
 		if a2.TableBytes != 0 {
 			t.Fatalf("file 0 warm table_bytes=%d", a2.TableBytes)
 		}
-		if _, labels, err := ProbeClustersWithIO(header, []float32{10, 0, 0, 0}, 1, 1, []int64{1}, []int64{1}, []float32{0}, "", 0, &b1); err != nil {
+		if _, labels, err := faiss.ProbeClustersWithIO(header, []float32{10, 0, 0, 0}, 1, 1, []int64{1}, []int64{1}, []float32{0}, "", 0, &b1); err != nil {
 			t.Fatal(err)
 		} else if labels[0] < 1000 || labels[0] >= 5000 {
 			t.Fatalf("file 1 should hit list 1 ids, got %v", labels)
@@ -242,16 +244,16 @@ func TestInvlistDirCache(t *testing.T) {
 	t.Run("resetDropsCache", func(t *testing.T) {
 		prefix := filepath.Join(t.TempDir(), "db")
 		writeThreeListIVF(t, prefix, [][]int{{0, 1, 2}})
-		header, err := ReadIndexDist(prefix, 0)
+		header, err := faiss.ReadIndexDist(prefix, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer header.Delete()
-		var cold, warm, after InvertedListsIOStats
-		if _, _, err := ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, &cold); err != nil {
+		var cold, warm, after faiss.InvertedListsIOStats
+		if _, _, err := faiss.ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, &cold); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, &warm); err != nil {
+		if _, _, err := faiss.ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, &warm); err != nil {
 			t.Fatal(err)
 		}
 		if warm.TableBytes != 0 {
@@ -260,7 +262,7 @@ func TestInvlistDirCache(t *testing.T) {
 		if err := header.Reset(); err != nil {
 			t.Fatal(err)
 		}
-		if _, labels, err := ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, &after); err != nil {
+		if _, labels, err := faiss.ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, &after); err != nil {
 			t.Fatal(err)
 		} else if labels[0] != 7 {
 			t.Fatalf("after reset lost id 7: %v", labels)
@@ -273,22 +275,22 @@ func TestInvlistDirCache(t *testing.T) {
 	t.Run("gapMergeAfterCache", func(t *testing.T) {
 		prefix := filepath.Join(t.TempDir(), "db")
 		writeThreeListIVF(t, prefix, [][]int{{0, 1, 2}})
-		header, err := ReadIndexDist(prefix, 0)
+		header, err := faiss.ReadIndexDist(prefix, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer header.Delete()
-		if _, _, err := ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, nil); err != nil {
+		if _, _, err := faiss.ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, nil); err != nil {
 			t.Fatal(err)
 		}
-		var merged, split InvertedListsIOStats
-		if _, _, err := ProbeClustersWithIO(header, q, 2, 2, []int64{0, 2}, []int64{0, 0}, []float32{0, 0}, "", 1<<30, &merged); err != nil {
+		var merged, split faiss.InvertedListsIOStats
+		if _, _, err := faiss.ProbeClustersWithIO(header, q, 2, 2, []int64{0, 2}, []int64{0, 0}, []float32{0, 0}, "", 1<<30, &merged); err != nil {
 			t.Fatal(err)
 		}
 		if merged.TableBytes != 0 || merged.MergedRanges != 1 || merged.SkipBytes == 0 {
 			t.Fatalf("cached merge of lists 0 and 2: table=%d ranges=%d skip=%d", merged.TableBytes, merged.MergedRanges, merged.SkipBytes)
 		}
-		if _, _, err := ProbeClustersWithIO(header, q, 2, 2, []int64{0, 2}, []int64{0, 0}, []float32{0, 0}, "", 0, &split); err != nil {
+		if _, _, err := faiss.ProbeClustersWithIO(header, q, 2, 2, []int64{0, 2}, []int64{0, 0}, []float32{0, 0}, "", 0, &split); err != nil {
 			t.Fatal(err)
 		}
 		if split.TableBytes != 0 || split.MergedRanges < 2 {
@@ -301,39 +303,39 @@ func TestInvlistDirCache(t *testing.T) {
 }
 
 func TestIVFAddCoreAllowsOverlap(t *testing.T) {
-	quant, err := NewIndexFlatL2(2)
+	quant, err := faiss.NewIndexFlatL2(2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := quant.Add([]float32{0, 0, 1, 0}); err != nil {
 		t.Fatal(err)
 	}
-	idx, err := NewIndexIVFFlat(quant, 2, 2)
+	idx, err := faiss.NewIndexIVFFlat(quant, 2, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer idx.Delete()
-	if err := SetIsTrained(idx, true); err != nil {
+	if err := faiss.SetIsTrained(idx, true); err != nil {
 		t.Fatal(err)
 	}
 	vec := []float32{0, 0}
-	if err := IVFAddCore(idx, vec, []int64{42}, []int64{0}); err != nil {
+	if err := faiss.IVFAddCore(idx, vec, []int64{42}, []int64{0}); err != nil {
 		t.Fatal(err)
 	}
-	if err := IVFAddCore(idx, vec, []int64{42}, []int64{1}); err != nil {
+	if err := faiss.IVFAddCore(idx, vec, []int64{42}, []int64{1}); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
 	prefix := filepath.Join(dir, "db")
-	if err := WriteIndexDistGrouped(idx, prefix, [][]int{{0, 1}}); err != nil {
+	if err := faiss.WriteIndexDistGrouped(idx, prefix, [][]int{{0, 1}}); err != nil {
 		t.Fatal(err)
 	}
-	header, err := ReadIndexDist(prefix, 0)
+	header, err := faiss.ReadIndexDist(prefix, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer header.Delete()
-	_, labels, err := ProbeClustersWithIO(
+	_, labels, err := faiss.ProbeClustersWithIO(
 		header, vec, 2, 2,
 		[]int64{0, 1}, []int64{0, 0}, []float32{0, 0},
 		"", 0, nil,
@@ -353,44 +355,44 @@ func TestIVFAddCoreAllowsOverlap(t *testing.T) {
 }
 
 func TestProbeClustersOverlapNeedsExtraK(t *testing.T) {
-	quant, err := NewIndexFlatL2(2)
+	quant, err := faiss.NewIndexFlatL2(2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := quant.Add([]float32{0, 0, 1, 0}); err != nil {
 		t.Fatal(err)
 	}
-	idx, err := NewIndexIVFFlat(quant, 2, 2)
+	idx, err := faiss.NewIndexIVFFlat(quant, 2, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer idx.Delete()
-	if err := SetIsTrained(idx, true); err != nil {
+	if err := faiss.SetIsTrained(idx, true); err != nil {
 		t.Fatal(err)
 	}
 	near := []float32{0, 0}
 	far := []float32{0.5, 0}
-	if err := IVFAddCore(idx, near, []int64{1}, []int64{0}); err != nil {
+	if err := faiss.IVFAddCore(idx, near, []int64{1}, []int64{0}); err != nil {
 		t.Fatal(err)
 	}
-	if err := IVFAddCore(idx, near, []int64{1}, []int64{1}); err != nil {
+	if err := faiss.IVFAddCore(idx, near, []int64{1}, []int64{1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := IVFAddCore(idx, far, []int64{2}, []int64{0}); err != nil {
+	if err := faiss.IVFAddCore(idx, far, []int64{2}, []int64{0}); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
 	prefix := filepath.Join(dir, "db")
-	if err := WriteIndexDistGrouped(idx, prefix, [][]int{{0, 1}}); err != nil {
+	if err := faiss.WriteIndexDistGrouped(idx, prefix, [][]int{{0, 1}}); err != nil {
 		t.Fatal(err)
 	}
-	header, err := ReadIndexDist(prefix, 0)
+	header, err := faiss.ReadIndexDist(prefix, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer header.Delete()
 
-	_, tight, err := ProbeClustersWithIO(
+	_, tight, err := faiss.ProbeClustersWithIO(
 		header, near, 2, 2,
 		[]int64{0, 1}, []int64{0, 0}, []float32{0, 0},
 		"", 0, nil,
@@ -411,7 +413,7 @@ func TestProbeClustersOverlapNeedsExtraK(t *testing.T) {
 		t.Fatalf("expected duplicate id 1 to fill k=2, got %v", tight)
 	}
 
-	_, wide, err := ProbeClustersWithIO(
+	_, wide, err := faiss.ProbeClustersWithIO(
 		header, near, 8, 2,
 		[]int64{0, 1}, []int64{0, 0}, []float32{0, 0},
 		"", 0, nil,
@@ -431,11 +433,11 @@ func TestProbeClustersOverlapNeedsExtraK(t *testing.T) {
 }
 
 func TestIndexIDMapSearchAndFilter(t *testing.T) {
-	flat, err := NewIndexFlatL2(2)
+	flat, err := faiss.NewIndexFlatL2(2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	idx, err := NewIndexIDMap2(flat)
+	idx, err := faiss.NewIndexIDMap2(flat)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,22 +446,22 @@ func TestIndexIDMapSearchAndFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "page")
-	if err := WriteIndex(idx, path); err != nil {
+	if err := faiss.WriteIndex(idx, path); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := ReadIndex(path, IOFlagReadOnly)
+	loaded, err := faiss.ReadIndex(path, faiss.IOFlagReadOnly)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer loaded.Delete()
-	_, labels, err := SearchWithSelector(loaded, []float32{0, 0}, 1, nil)
+	_, labels, err := faiss.SearchWithSelector(loaded, []float32{0, 0}, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if labels[0] != 10 {
 		t.Fatalf("unfiltered: %v", labels)
 	}
-	_, filtered, err := SearchWithSelector(loaded, []float32{0, 0}, 2, []int64{11, 12})
+	_, filtered, err := faiss.SearchWithSelector(loaded, []float32{0, 0}, 2, []int64{11, 12})
 	if err != nil {
 		t.Fatal(err)
 	}
