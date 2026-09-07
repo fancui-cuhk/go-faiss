@@ -3,6 +3,7 @@ package faiss
 /*
 #include <stdlib.h>
 #include <faiss/c_api/Index_c.h>
+#include <faiss/c_api/IndexIVF_c.h>
 #include <faiss/c_api/IndexIVFFlat_c.h>
 #include <faiss/c_api/MetaIndexes_c.h>
 #include <faiss/c_api/impl/AuxIndexStructures_c.h>
@@ -23,6 +24,8 @@ type InvertedListsIOStats struct {
 	SkipBytes    uint64
 	ReadOps      uint64
 	MergedRanges uint64
+	IoMs         float64
+	ComputeMs    float64
 }
 
 // Bytes is the number of bytes actually transferred (table + payload + merged holes).
@@ -81,6 +84,8 @@ func ProbeClustersWithIO(
 		stats.SkipBytes = uint64(st.skip_bytes)
 		stats.ReadOps = uint64(st.read_ops)
 		stats.MergedRanges = uint64(st.merged_ranges)
+		// io_ms / compute_ms live in source Faiss headers; the installed
+		// libfaiss C struct does not have them yet, so leave these at 0.
 	}
 	return distances, labels, nil
 }
@@ -200,4 +205,98 @@ func SearchWithSelector(idx Index, x []float32, k int64, filter []int64) (distan
 		return nil, nil, getLastError()
 	}
 	return distances, labels, nil
+}
+
+// InitRAMInvlists replaces inverted lists with empty ArrayInvertedLists and
+// sets ntotal=0. The quantizer, list_to_file mapping, and fname are kept.
+func InitRAMInvlists(idx Index) error {
+	if idx == nil {
+		return fmt.Errorf("InitRAMInvlists: nil index")
+	}
+	if c := C.faiss_ivf_init_ram_invlists(idx.cPtr()); c != 0 {
+		return getLastError()
+	}
+	return nil
+}
+
+// IVFListSize is the number of vectors currently stored in one RAM inverted list.
+func IVFListSize(idx Index, listNo int64) (int64, error) {
+	if idx == nil {
+		return 0, fmt.Errorf("IVFListSize: nil index")
+	}
+	ivf := C.faiss_IndexIVF_cast(idx.cPtr())
+	if ivf == nil {
+		return 0, fmt.Errorf("IVFListSize: index is not IVF")
+	}
+	return int64(C.faiss_IndexIVF_get_list_size(ivf, C.size_t(listNo))), nil
+}
+
+// SearchPreassigned runs Search over already-assigned IVF lists in RAM.
+// Unlike ProbeClusters, this does not reload or replace inverted lists.
+func SearchPreassigned(idx Index, x []float32, k int64, clusterIDs []int64, centroidDis []float32) (distances []float32, labels []int64, err error) {
+	if idx == nil {
+		return nil, nil, fmt.Errorf("SearchPreassigned: nil index")
+	}
+	if k <= 0 {
+		return nil, nil, fmt.Errorf("SearchPreassigned: k must be positive")
+	}
+	if len(clusterIDs) != len(centroidDis) {
+		return nil, nil, fmt.Errorf("SearchPreassigned: cluster_ids (%d) and centroid_distances (%d) differ", len(clusterIDs), len(centroidDis))
+	}
+	ivf := C.faiss_IndexIVF_cast(idx.cPtr())
+	if ivf == nil {
+		return nil, nil, fmt.Errorf("SearchPreassigned: index is not IVF")
+	}
+	n := len(x) / idx.D()
+	distances = make([]float32, int64(n)*k)
+	labels = make([]int64, int64(n)*k)
+	if n == 0 || len(clusterIDs) == 0 {
+		return distances, labels, nil
+	}
+	if c := C.faiss_IndexIVF_search_preassigned(
+		ivf,
+		C.idx_t(n),
+		(*C.float)(&x[0]),
+		C.idx_t(k),
+		(*C.idx_t)(&clusterIDs[0]),
+		(*C.float)(&centroidDis[0]),
+		(*C.float)(&distances[0]),
+		(*C.idx_t)(&labels[0]),
+		0,
+	); c != 0 {
+		return distances, labels, getLastError()
+	}
+	return distances, labels, nil
+}
+
+// AbsorbInvlists merges selected lists from `{base}_invlists_{fid}` into the
+// resident ArrayInvertedLists. Lists that already have entries are skipped.
+func AbsorbInvlists(idx Index, listIDs, fileIDs []int64, invlistBasePath string) error {
+	if idx == nil {
+		return fmt.Errorf("AbsorbInvlists: nil index")
+	}
+	if len(listIDs) != len(fileIDs) {
+		return fmt.Errorf("AbsorbInvlists: list_ids (%d) and file_ids (%d) differ", len(listIDs), len(fileIDs))
+	}
+	var cPath *C.char
+	if invlistBasePath != "" {
+		cPath = C.CString(invlistBasePath)
+		defer C.free(unsafe.Pointer(cPath))
+	}
+	var cLists, cFiles *C.idx_t
+	n := len(listIDs)
+	if n > 0 {
+		cLists = (*C.idx_t)(unsafe.Pointer(&listIDs[0]))
+		cFiles = (*C.idx_t)(unsafe.Pointer(&fileIDs[0]))
+	}
+	if c := C.faiss_ivf_absorb_invlists_from_files(
+		idx.cPtr(),
+		cLists,
+		C.size_t(n),
+		cFiles,
+		cPath,
+	); c != 0 {
+		return getLastError()
+	}
+	return nil
 }

@@ -471,3 +471,97 @@ func TestIndexIDMapSearchAndFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestAbsorbInvlistsMergesDisjointGroups(t *testing.T) {
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "db")
+	const d = 4
+	quant, err := faiss.NewIndexFlatL2(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cents := []float32{
+		0, 0, 0, 0,
+		10, 0, 0, 0,
+		0, 10, 0, 0,
+	}
+	if err := quant.Add(cents); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := faiss.NewIndexIVFFlat(quant, d, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Delete()
+	if err := faiss.SetIsTrained(idx, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := faiss.IVFAddCore(idx, []float32{0, 0, 0, 0}, []int64{7}, []int64{0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := faiss.IVFAddCore(idx, []float32{10, 0, 0, 0}, []int64{8}, []int64{1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := faiss.IVFAddCore(idx, []float32{0, 10, 0, 0}, []int64{9}, []int64{2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := faiss.WriteIndexDistGrouped(idx, prefix, [][]int{{0}, {1, 2}}); err != nil {
+		t.Fatal(err)
+	}
+
+	header, err := faiss.ReadIndexDist(prefix, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer header.Delete()
+	if err := faiss.InitRAMInvlists(header); err != nil {
+		t.Fatal(err)
+	}
+	if header.Ntotal() != 0 {
+		t.Fatalf("InitRAMInvlists ntotal=%d want 0", header.Ntotal())
+	}
+
+	mapping, err := faiss.GetListToFileMapping(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := faiss.AbsorbInvlists(header, []int64{0}, []int64{mapping[0]}, prefix); err != nil {
+		t.Fatal(err)
+	}
+	sz0, err := faiss.IVFListSize(header, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sz0 != 1 || header.Ntotal() != 1 {
+		t.Fatalf("after first absorb list0=%d ntotal=%d", sz0, header.Ntotal())
+	}
+	sz1, _ := faiss.IVFListSize(header, 1)
+	if sz1 != 0 {
+		t.Fatalf("list 1 should still be empty, got %d", sz1)
+	}
+
+	if err := faiss.AbsorbInvlists(header, []int64{1, 2}, []int64{mapping[1], mapping[2]}, prefix); err != nil {
+		t.Fatal(err)
+	}
+	if header.Ntotal() != 3 {
+		t.Fatalf("after second absorb ntotal=%d want 3", header.Ntotal())
+	}
+	before := header.Ntotal()
+	if err := faiss.AbsorbInvlists(header, []int64{0, 1, 2}, []int64{mapping[0], mapping[1], mapping[2]}, prefix); err != nil {
+		t.Fatal(err)
+	}
+	if header.Ntotal() != before {
+		t.Fatalf("re-absorb should be a no-op, ntotal %d -> %d", before, header.Ntotal())
+	}
+
+	if err := faiss.TuneIVFSearch(header, 3, faiss.IVFParallelLists); err != nil {
+		t.Fatal(err)
+	}
+	_, labels, err := header.Search([]float32{0, 0, 0, 0}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if labels[0] != 7 {
+		t.Fatalf("search recall: got id %d want 7", labels[0])
+	}
+}
