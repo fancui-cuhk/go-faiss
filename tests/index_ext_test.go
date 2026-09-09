@@ -565,3 +565,96 @@ func TestAbsorbInvlistsMergesDisjointGroups(t *testing.T) {
 		t.Fatalf("search recall: got id %d want 7", labels[0])
 	}
 }
+
+func TestReadIndexHeaderRamAndAbsorbComplete(t *testing.T) {
+	const d = 4
+	quant, err := faiss.NewIndexFlatL2(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cents := []float32{
+		0, 0, 0, 0,
+		10, 0, 0, 0,
+		0, 10, 0, 0,
+	}
+	if err := quant.Add(cents); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := faiss.NewIndexIVFFlat(quant, d, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Delete()
+	if err := faiss.SetIsTrained(idx, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := faiss.IVFAddCore(idx, []float32{0, 0, 0, 0}, []int64{7}, []int64{0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := faiss.IVFAddCore(idx, []float32{10, 0, 0, 0}, []int64{8}, []int64{1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := faiss.IVFAddCore(idx, []float32{0, 10, 0, 0}, []int64{9}, []int64{2}); err != nil {
+		t.Fatal(err)
+	}
+	complete := filepath.Join(t.TempDir(), "db_complete")
+	if err := faiss.WriteIndex(idx, complete); err != nil {
+		t.Fatal(err)
+	}
+
+	header, err := faiss.ReadIndexHeaderRam(complete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer header.Delete()
+	if header.Ntotal() != 0 {
+		t.Fatalf("header-only ntotal=%d want 0", header.Ntotal())
+	}
+
+	_, clusters, _, err := header.SelectClusters([]float32{0, 0, 0, 0}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := faiss.AbsorbListsFromComplete(header, clusters, complete); err != nil {
+		t.Fatal(err)
+	}
+	if header.Ntotal() < 1 {
+		t.Fatalf("after nprobe absorb ntotal=%d", header.Ntotal())
+	}
+	if b, err := faiss.IVFResidentListBytes(header); err != nil || b <= 0 {
+		t.Fatalf("resident list bytes after absorb: %d %v", b, err)
+	}
+	sz0, _ := faiss.IVFListSize(header, 0)
+	if sz0 < 1 {
+		t.Fatalf("list 0 empty after absorb")
+	}
+	sz1, _ := faiss.IVFListSize(header, 1)
+	if sz1 != 0 {
+		t.Fatalf("list 1 should still be empty, got %d", sz1)
+	}
+
+	if err := faiss.TuneIVFSearch(header, 1, faiss.IVFParallelLists); err != nil {
+		t.Fatal(err)
+	}
+	_, labels, err := faiss.SearchPreassigned(header, []float32{0, 0, 0, 0}, 1, clusters, []float32{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if labels[0] != 7 {
+		t.Fatalf("partial search got id %d want 7", labels[0])
+	}
+
+	if err := faiss.AbsorbListsFromComplete(header, nil, complete); err != nil {
+		t.Fatal(err)
+	}
+	if header.Ntotal() != 3 {
+		t.Fatalf("full absorb ntotal=%d want 3", header.Ntotal())
+	}
+	before := header.Ntotal()
+	if err := faiss.AbsorbListsFromComplete(header, nil, complete); err != nil {
+		t.Fatal(err)
+	}
+	if header.Ntotal() != before {
+		t.Fatalf("re-absorb should be a no-op, ntotal %d -> %d", before, header.Ntotal())
+	}
+}

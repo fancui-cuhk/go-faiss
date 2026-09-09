@@ -219,6 +219,18 @@ func InitRAMInvlists(idx Index) error {
 	return nil
 }
 
+// IVFNlist is IndexIVF.nlist.
+func IVFNlist(idx Index) (int, error) {
+	if idx == nil {
+		return 0, fmt.Errorf("IVFNlist: nil index")
+	}
+	ivf := C.faiss_IndexIVF_cast(idx.cPtr())
+	if ivf == nil {
+		return 0, fmt.Errorf("IVFNlist: not IVF")
+	}
+	return int(C.faiss_IndexIVF_nlist(ivf)), nil
+}
+
 // IVFListSize is the number of vectors currently stored in one RAM inverted list.
 func IVFListSize(idx Index, listNo int64) (int64, error) {
 	if idx == nil {
