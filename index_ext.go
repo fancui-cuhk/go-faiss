@@ -11,6 +11,7 @@ package faiss
 import "C"
 import (
 	"fmt"
+	"runtime"
 	"unsafe"
 )
 
@@ -279,6 +280,110 @@ func SearchPreassigned(idx Index, x []float32, k int64, clusterIDs []int64, cent
 		return distances, labels, getLastError()
 	}
 	return distances, labels, nil
+}
+
+// InvlistPayload is one inverted list already in process memory (codes + ids).
+// Codes is nvec * code_size bytes; IDs is nvec labels.
+type InvlistPayload struct {
+	ListID int64
+	Codes  []byte
+	IDs    []int64
+}
+
+// ReadInvlists reads selected lists from `{base}_invlists_{fid}` in Go.
+// It does not touch a Faiss index and does not need the per-db Search lock.
+func ReadInvlists(invlistBasePath string, listIDs, fileIDs []int64) ([]InvlistPayload, error) {
+	if len(listIDs) != len(fileIDs) {
+		return nil, fmt.Errorf("ReadInvlists: list_ids (%d) and file_ids (%d) differ", len(listIDs), len(fileIDs))
+	}
+	if len(listIDs) == 0 {
+		return nil, nil
+	}
+	byFile := make(map[int64][]int64)
+	for i, fid := range fileIDs {
+		byFile[fid] = append(byFile[fid], listIDs[i])
+	}
+	var out []InvlistPayload
+	for fid, wanted := range byFile {
+		part, err := readInvlistFile(fmt.Sprintf("%s_invlists_%d", invlistBasePath, fid), wanted)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, part...)
+	}
+	return out, nil
+}
+
+// InstallInvlists copies already-in-memory lists into the resident IVF.
+// Lists that already have entries are skipped. ntotal becomes the sum of
+// loaded list sizes. Does not read disk.
+func InstallInvlists(idx Index, lists []InvlistPayload) error {
+	if idx == nil {
+		return fmt.Errorf("InstallInvlists: nil index")
+	}
+	n := len(lists)
+	if n == 0 {
+		return nil
+	}
+	// CGO forbids a Go pointer to a Go pointer. Pointer tables and
+	// codes/ids live in C memory for the duration of the call.
+	cListIDs := (*C.idx_t)(C.calloc(C.size_t(n), C.size_t(unsafe.Sizeof(C.idx_t(0)))))
+	cNvecs := (*C.size_t)(C.calloc(C.size_t(n), C.size_t(unsafe.Sizeof(C.size_t(0)))))
+	cCodePtrs := (**C.uint8_t)(C.calloc(C.size_t(n), C.size_t(unsafe.Sizeof(uintptr(0)))))
+	cIDPtrs := (**C.idx_t)(C.calloc(C.size_t(n), C.size_t(unsafe.Sizeof(uintptr(0)))))
+	if cListIDs == nil || cNvecs == nil || cCodePtrs == nil || cIDPtrs == nil {
+		C.free(unsafe.Pointer(cListIDs))
+		C.free(unsafe.Pointer(cNvecs))
+		C.free(unsafe.Pointer(cCodePtrs))
+		C.free(unsafe.Pointer(cIDPtrs))
+		return fmt.Errorf("InstallInvlists: out of memory")
+	}
+	defer C.free(unsafe.Pointer(cListIDs))
+	defer C.free(unsafe.Pointer(cNvecs))
+	defer C.free(unsafe.Pointer(cCodePtrs))
+	defer C.free(unsafe.Pointer(cIDPtrs))
+
+	listIDs := unsafe.Slice(cListIDs, n)
+	nvecs := unsafe.Slice(cNvecs, n)
+	codePtrs := unsafe.Slice(cCodePtrs, n)
+	idPtrs := unsafe.Slice(cIDPtrs, n)
+	for i, l := range lists {
+		listIDs[i] = C.idx_t(l.ListID)
+		if len(l.IDs) == 0 {
+			continue
+		}
+		if len(l.Codes) == 0 {
+			return fmt.Errorf("InstallInvlists: list %d has ids but no codes", l.ListID)
+		}
+		codeBytes := len(l.Codes)
+		idBytes := len(l.IDs) * int(unsafe.Sizeof(int64(0)))
+		cCodes := C.malloc(C.size_t(codeBytes))
+		cIDs := C.malloc(C.size_t(idBytes))
+		if cCodes == nil || cIDs == nil {
+			C.free(cCodes)
+			C.free(cIDs)
+			return fmt.Errorf("InstallInvlists: out of memory")
+		}
+		copy(unsafe.Slice((*byte)(cCodes), codeBytes), l.Codes)
+		copy(unsafe.Slice((*byte)(cIDs), idBytes), unsafe.Slice((*byte)(unsafe.Pointer(&l.IDs[0])), idBytes))
+		nvecs[i] = C.size_t(len(l.IDs))
+		codePtrs[i] = (*C.uint8_t)(cCodes)
+		idPtrs[i] = (*C.idx_t)(cIDs)
+		defer C.free(cCodes)
+		defer C.free(cIDs)
+	}
+	if c := C.faiss_ivf_install_invlists(
+		idx.cPtr(),
+		cListIDs,
+		C.size_t(n),
+		cNvecs,
+		cCodePtrs,
+		cIDPtrs,
+	); c != 0 {
+		return getLastError()
+	}
+	runtime.KeepAlive(lists)
+	return nil
 }
 
 // AbsorbInvlists merges selected lists from `{base}_invlists_{fid}` into the
