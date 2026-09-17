@@ -292,26 +292,37 @@ type InvlistPayload struct {
 
 // ReadInvlists reads selected lists from `{base}_invlists_{fid}` in Go.
 // It does not touch a Faiss index and does not need the per-db Search lock.
+// Holes ≤ DefaultSeekGapBytes (2 MiB) are one ReadAt, same as C++ merge_invlist_ranges.
 func ReadInvlists(invlistBasePath string, listIDs, fileIDs []int64) ([]InvlistPayload, error) {
+	lists, _, err := ReadInvlistsGap(invlistBasePath, listIDs, fileIDs, DefaultSeekGapBytes)
+	return lists, err
+}
+
+// ReadInvlistsGap is ReadInvlists with an explicit hole size.
+// seekGapBytes 0 still joins clusters that touch (gap 0); a hole bigger than
+// seekGapBytes stays two ReadAts.
+func ReadInvlistsGap(invlistBasePath string, listIDs, fileIDs []int64, seekGapBytes uint64) ([]InvlistPayload, InvlistReadStats, error) {
 	if len(listIDs) != len(fileIDs) {
-		return nil, fmt.Errorf("ReadInvlists: list_ids (%d) and file_ids (%d) differ", len(listIDs), len(fileIDs))
+		return nil, InvlistReadStats{}, fmt.Errorf("ReadInvlists: list_ids (%d) and file_ids (%d) differ", len(listIDs), len(fileIDs))
 	}
 	if len(listIDs) == 0 {
-		return nil, nil
+		return nil, InvlistReadStats{}, nil
 	}
 	byFile := make(map[int64][]int64)
 	for i, fid := range fileIDs {
 		byFile[fid] = append(byFile[fid], listIDs[i])
 	}
 	var out []InvlistPayload
+	var st InvlistReadStats
 	for fid, wanted := range byFile {
-		part, err := readInvlistFile(fmt.Sprintf("%s_invlists_%d", invlistBasePath, fid), wanted)
+		part, partSt, err := readInvlistFile(fmt.Sprintf("%s_invlists_%d", invlistBasePath, fid), wanted, seekGapBytes)
 		if err != nil {
-			return nil, err
+			return nil, st, err
 		}
 		out = append(out, part...)
+		st.add(partSt)
 	}
-	return out, nil
+	return out, st, nil
 }
 
 // InstallInvlists copies already-in-memory lists into the resident IVF.
