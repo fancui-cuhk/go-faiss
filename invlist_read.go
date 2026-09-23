@@ -75,34 +75,15 @@ func readInvlistFile(fname string, wanted []int64, seekGapBytes uint64) ([]Invli
 	for _, id := range wanted {
 		need[id] = struct{}{}
 	}
-	f, err := os.Open(fname)
+	f, oDirect, err := openInvlist(fname)
 	if err != nil {
 		return nil, InvlistReadStats{}, fmt.Errorf("ReadInvlists: open %s: %w", fname, err)
 	}
 	defer f.Close()
 
-	numList, err := readU64(f)
+	numList, codeSize, _, idsizes, tableEnd, err := readInvlistTable(f, oDirect)
 	if err != nil {
-		return nil, InvlistReadStats{}, fmt.Errorf("ReadInvlists: %s num_list: %w", fname, err)
-	}
-	codeSize, err := readU64(f)
-	if err != nil {
-		return nil, InvlistReadStats{}, fmt.Errorf("ReadInvlists: %s code_size: %w", fname, err)
-	}
-	idsizesLen, err := readU64(f)
-	if err != nil {
-		return nil, InvlistReadStats{}, fmt.Errorf("ReadInvlists: %s idsizes len: %w", fname, err)
-	}
-	if idsizesLen != numList*2 {
-		return nil, InvlistReadStats{}, fmt.Errorf("ReadInvlists: %s idsizes len %d want %d", fname, idsizesLen, numList*2)
-	}
-	idsizes := make([]uint64, idsizesLen)
-	if err := binary.Read(f, binary.LittleEndian, idsizes); err != nil {
-		return nil, InvlistReadStats{}, fmt.Errorf("ReadInvlists: %s idsizes: %w", fname, err)
-	}
-	tableEnd, err := f.Seek(0, io.SeekCurrent)
-	if err != nil {
-		return nil, InvlistReadStats{}, err
+		return nil, InvlistReadStats{}, fmt.Errorf("ReadInvlists: %s %w", fname, err)
 	}
 
 	locs := make([]invlistLoc, 0, numList)
@@ -137,8 +118,8 @@ func readInvlistFile(fname string, wanted []int64, seekGapBytes uint64) ([]Invli
 
 	var st InvlistReadStats
 	for _, rg := range mergeInvlistRanges(needLocs, seekGapBytes) {
-		buf := make([]byte, rg.length)
-		if _, err := f.ReadAt(buf, rg.start); err != nil {
+		buf, err := readInvlistRange(f, rg.start, int(rg.length), oDirect)
+		if err != nil {
 			return nil, st, fmt.Errorf("ReadInvlists: %s range off=%d len=%d: %w", fname, rg.start, rg.length, err)
 		}
 		st.ReadAts++
@@ -175,4 +156,53 @@ func readU64(r io.Reader) (uint64, error) {
 		return 0, err
 	}
 	return v, nil
+}
+
+// openInvlist is O_DIRECT on Linux when EMBER_INVLIST_ODIRECT=1.
+var openInvlist = openInvlistBuffered
+
+func openInvlistBuffered(fname string) (*os.File, bool, error) {
+	f, err := os.Open(fname)
+	return f, false, err
+}
+
+func readInvlistTable(f *os.File, oDirect bool) (numList, codeSize, idsizesLen uint64, idsizes []uint64, tableEnd int64, err error) {
+	head, err := readInvlistRange(f, 0, 24, oDirect)
+	if err != nil {
+		return 0, 0, 0, nil, 0, fmt.Errorf("header: %w", err)
+	}
+	numList = binary.LittleEndian.Uint64(head[0:8])
+	codeSize = binary.LittleEndian.Uint64(head[8:16])
+	idsizesLen = binary.LittleEndian.Uint64(head[16:24])
+	if idsizesLen != numList*2 {
+		return 0, 0, 0, nil, 0, fmt.Errorf("idsizes len %d want %d", idsizesLen, numList*2)
+	}
+	tableEnd = 24 + int64(idsizesLen)*8
+	raw, err := readInvlistRange(f, 0, int(tableEnd), oDirect)
+	if err != nil {
+		return 0, 0, 0, nil, 0, fmt.Errorf("idsizes: %w", err)
+	}
+	idsizes = make([]uint64, idsizesLen)
+	if err := binary.Read(bytes.NewReader(raw[24:tableEnd]), binary.LittleEndian, idsizes); err != nil {
+		return 0, 0, 0, nil, 0, err
+	}
+	return numList, codeSize, idsizesLen, idsizes, tableEnd, nil
+}
+
+func readInvlistRange(f *os.File, off int64, n int, oDirect bool) ([]byte, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	if !oDirect {
+		buf := make([]byte, n)
+		got, err := f.ReadAt(buf, off)
+		if got == n {
+			return buf, nil
+		}
+		if err == nil {
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, err
+	}
+	return readAtDirect(f, off, n)
 }

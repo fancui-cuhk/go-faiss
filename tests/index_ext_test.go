@@ -753,3 +753,108 @@ func TestReadIndexHeaderRamAndAbsorbComplete(t *testing.T) {
 		t.Fatalf("re-absorb should be a no-op, ntotal %d -> %d", before, header.Ntotal())
 	}
 }
+
+func TestCloneIndex_InitRAMInvlistsIndependent(t *testing.T) {
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "db")
+	const d = 4
+	quant, err := faiss.NewIndexFlatL2(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cents := []float32{
+		0, 0, 0, 0,
+		10, 0, 0, 0,
+		0, 10, 0, 0,
+	}
+	if err := quant.Add(cents); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := faiss.NewIndexIVFFlat(quant, d, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Delete()
+	if err := faiss.SetIsTrained(idx, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := faiss.IVFAddCore(idx, []float32{0, 0, 0, 0}, []int64{7}, []int64{0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := faiss.WriteIndexDistGrouped(idx, prefix, [][]int{{0}, {1}, {2}}); err != nil {
+		t.Fatal(err)
+	}
+
+	header, err := faiss.ReadIndexDist(prefix, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer header.Delete()
+	if err := faiss.InitRAMInvlists(header); err != nil {
+		t.Fatal(err)
+	}
+
+	clone, err := faiss.CloneIndex(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clone.Delete()
+	if err := faiss.InitRAMInvlists(clone); err != nil {
+		t.Fatal(err)
+	}
+
+	mapping, err := faiss.GetListToFileMapping(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := faiss.AbsorbInvlists(clone, []int64{0}, []int64{mapping[0]}, prefix); err != nil {
+		t.Fatal(err)
+	}
+	szClone, err := faiss.IVFListSize(clone, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if szClone != 1 {
+		t.Fatalf("clone list0=%d want 1", szClone)
+	}
+	szHdr, err := faiss.IVFListSize(header, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if szHdr != 0 {
+		t.Fatalf("header list0=%d after clone install, want 0 (shared lists)", szHdr)
+	}
+}
+
+func TestProbeClustersODirect(t *testing.T) {
+	t.Setenv("EMBER_INVLIST_ODIRECT", "1")
+	dir, err := os.MkdirTemp("/mnt/nvme", "odirect-test-*")
+	if err != nil {
+		dir = t.TempDir()
+	} else {
+		t.Cleanup(func() { os.RemoveAll(dir) })
+	}
+	prefix := filepath.Join(dir, "db")
+	writeThreeListIVF(t, prefix, [][]int{{0, 1, 2}})
+	header, err := faiss.ReadIndexDist(prefix, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer header.Delete()
+	q := []float32{0, 0, 0, 0}
+	_, labels, err := faiss.ProbeClustersWithIO(header, q, 1, 1, []int64{0}, []int64{0}, []float32{0}, "", 0, nil)
+	if err != nil {
+		t.Fatalf("O_DIRECT list0: %v", err)
+	}
+	if len(labels) == 0 || labels[0] != 7 {
+		t.Fatalf("O_DIRECT list0 labels=%v want id 7", labels)
+	}
+	var st faiss.InvertedListsIOStats
+	_, _, err = faiss.ProbeClustersWithIO(header, q, 1, 1, []int64{1}, []int64{0}, []float32{0}, "", 0, &st)
+	if err != nil {
+		t.Fatalf("O_DIRECT list1: %v", err)
+	}
+	if st.ReadOps < 1 && st.PayloadBytes == 0 {
+		t.Fatalf("O_DIRECT list1 empty io: read_ops=%d payload=%d", st.ReadOps, st.PayloadBytes)
+	}
+}

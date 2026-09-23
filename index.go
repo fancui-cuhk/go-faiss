@@ -5,9 +5,13 @@ package faiss
 #include <faiss/c_api/Index_c.h>
 #include <faiss/c_api/impl/AuxIndexStructures_c.h>
 #include <faiss/c_api/index_factory_c.h>
+#include <faiss/c_api/clone_index_c.h>
 */
 import "C"
-import "unsafe"
+import (
+	"fmt"
+	"unsafe"
+)
 
 // Index is a Faiss index.
 //
@@ -272,4 +276,19 @@ func IndexFactory(d int, description string, metric int) (*IndexImpl, error) {
 		return nil, getLastError()
 	}
 	return &IndexImpl{&idx}, nil
+}
+
+// CloneIndex returns a deep copy of idx (faiss_clone_index).
+func CloneIndex(idx Index) (*IndexImpl, error) {
+	if idx == nil {
+		return nil, fmt.Errorf("CloneIndex: nil index")
+	}
+	var out *C.FaissIndex
+	if c := C.faiss_clone_index(idx.cPtr(), &out); c != 0 {
+		return nil, getLastError()
+	}
+	if out == nil {
+		return nil, fmt.Errorf("CloneIndex: null result")
+	}
+	return &IndexImpl{&faissIndex{idx: out}}, nil
 }
