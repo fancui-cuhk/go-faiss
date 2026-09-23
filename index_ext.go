@@ -290,6 +290,24 @@ type InvlistPayload struct {
 	IDs    []int64
 }
 
+// ListInvlistIDs returns inverted-list IDs in on-disk (offset) order.
+func ListInvlistIDs(fname string) ([]int64, error) {
+	f, oDirect, err := openInvlist(fname)
+	if err != nil {
+		return nil, fmt.Errorf("ListInvlistIDs: open %s: %w", fname, err)
+	}
+	defer f.Close()
+	_, _, _, idsizes, _, err := readInvlistTable(f, oDirect)
+	if err != nil {
+		return nil, fmt.Errorf("ListInvlistIDs: %s %w", fname, err)
+	}
+	out := make([]int64, 0, len(idsizes)/2)
+	for i := 0; i+1 < len(idsizes); i += 2 {
+		out = append(out, int64(idsizes[i]))
+	}
+	return out, nil
+}
+
 // ReadInvlists reads selected lists from `{base}_invlists_{fid}` in Go.
 // It does not touch a Faiss index and does not need the per-db Search lock.
 // Holes ≤ DefaultSeekGapBytes (2 MiB) are one ReadAt, same as C++ merge_invlist_ranges.
