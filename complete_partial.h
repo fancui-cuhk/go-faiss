@@ -10,6 +10,9 @@ extern "C" {
 
 const char* gofaiss_complete_last_error(void);
 
+/* Deserialize an index from a memory buffer (used for O_DIRECT page loads). */
+int gofaiss_read_index_bytes(const void* data, size_t n, int io_flags, void** p_out);
+
 /* IVF header + empty ArrayInvertedLists. Does not heap-load all invlists. */
 int gofaiss_read_index_header_ram(const char* fname, void** p_out);
 
@@ -24,6 +27,26 @@ int gofaiss_absorb_lists_from_complete(
 
 /* Codes+ids bytes in RAM inverted lists. Uses invlists->nlist, not ivf->nlist. */
 int64_t gofaiss_ivf_resident_list_bytes(void* index);
+
+/* One list inside a caller-mmap'd block. Offsets are bytes from block.
+ * id_off must be 8-byte aligned.
+ * Return 0: block is owned by the index (or already munmap'd if nothing was
+ * adopted). Return -1: caller still owns the block. Return -2: this function
+ * owns or already munmap'd the block; the caller must not munmap.
+ */
+typedef struct GofaissInvlistSpan {
+	int64_t list_id;
+	size_t nvec;
+	size_t code_off;
+	size_t id_off;
+} GofaissInvlistSpan;
+
+int gofaiss_adopt_invlist_block(
+		void* index,
+		void* block,
+		size_t block_bytes,
+		const GofaissInvlistSpan* spans,
+		size_t n_spans);
 
 #ifdef __cplusplus
 }

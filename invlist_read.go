@@ -116,25 +116,121 @@ func readInvlistFile(fname string, wanted []int64, seekGapBytes uint64) ([]Invli
 		needLocs = append(needLocs, loc)
 	}
 
+	ranges := mergeInvlistRanges(needLocs, seekGapBytes)
+	if len(ranges) == 0 {
+		return out, InvlistReadStats{}, nil
+	}
+	_, windows, release, err := readPayloadBlock(f, ranges, oDirect)
+	if err != nil {
+		return nil, InvlistReadStats{}, fmt.Errorf("ReadInvlists: %s: %w", fname, err)
+	}
+	pr := &payloadRelease{fn: release}
 	var st InvlistReadStats
-	for _, rg := range mergeInvlistRanges(needLocs, seekGapBytes) {
-		buf, err := readInvlistRange(f, rg.start, int(rg.length), oDirect)
-		if err != nil {
-			return nil, st, fmt.Errorf("ReadInvlists: %s range off=%d len=%d: %w", fname, rg.start, rg.length, err)
-		}
+	for i, rg := range ranges {
 		st.ReadAts++
 		st.RangeBytes += int64(rg.length)
+		buf := windows[i]
 		for _, loc := range rg.lists {
 			rel := loc.offset - rg.start
+			if rel < 0 || int(rel)+int(loc.bytes) > len(buf) {
+				pr.call()
+				return nil, st, fmt.Errorf("ReadInvlists: %s list %d outside range", fname, loc.listID)
+			}
 			piece := buf[rel : rel+int64(loc.bytes)]
 			p, err := decodeInvlistPayload(loc, piece, codeSize)
 			if err != nil {
+				pr.call()
 				return nil, st, fmt.Errorf("ReadInvlists: %s list %d: %w", fname, loc.listID, err)
+			}
+			if p.release == nil {
+				p.release = pr
 			}
 			out = append(out, p)
 		}
 	}
 	return out, st, nil
+}
+
+// InvlistLoc is one list's byte span inside a single OnDiskInvertedLists file.
+type InvlistLoc struct {
+	ListID int64
+	Nvec   uint64
+	Offset int64
+	Bytes  uint64
+}
+
+// MergedRange is a contiguous ReadAt/Range after mergeInvlistRanges.
+type MergedRange struct {
+	Start  int64
+	Length uint64
+	Lists  []InvlistLoc
+}
+
+// ParseInvlistTableBytes parses a buffer that starts at file offset 0 and is
+// at least tableEnd bytes long (header + idsizes).
+func ParseInvlistTableBytes(raw []byte) (locs []InvlistLoc, codeSize uint64, tableEnd int64, err error) {
+	if len(raw) < 24 {
+		return nil, 0, 0, fmt.Errorf("invlist table: short header (%d bytes)", len(raw))
+	}
+	numList := binary.LittleEndian.Uint64(raw[0:8])
+	codeSize = binary.LittleEndian.Uint64(raw[8:16])
+	idsizesLen := binary.LittleEndian.Uint64(raw[16:24])
+	if idsizesLen != numList*2 {
+		return nil, 0, 0, fmt.Errorf("invlist table: idsizes len %d want %d", idsizesLen, numList*2)
+	}
+	tableEnd = 24 + int64(idsizesLen)*8
+	if int64(len(raw)) < tableEnd {
+		return nil, 0, 0, fmt.Errorf("invlist table: short idsizes have %d want %d", len(raw), tableEnd)
+	}
+	idsizes := make([]uint64, idsizesLen)
+	if err := binary.Read(bytes.NewReader(raw[24:tableEnd]), binary.LittleEndian, idsizes); err != nil {
+		return nil, 0, 0, err
+	}
+	locs = make([]InvlistLoc, 0, numList)
+	off := uint64(tableEnd)
+	for i := 0; i+1 < len(idsizes); i += 2 {
+		nvec := idsizes[i+1]
+		nbytes := nvec*codeSize + nvec*8
+		locs = append(locs, InvlistLoc{
+			ListID: int64(idsizes[i]),
+			Nvec:   nvec,
+			Offset: int64(off),
+			Bytes:  nbytes,
+		})
+		off += nbytes
+	}
+	return locs, codeSize, tableEnd, nil
+}
+
+// InvlistTablePrefixLen is the first Range needed to learn tableEnd.
+const InvlistTablePrefixLen = 24
+
+// MergeInvlistRanges joins needed list spans when the hole is <= seekGapBytes.
+func MergeInvlistRanges(need []InvlistLoc, seekGapBytes uint64) []MergedRange {
+	internal := make([]invlistLoc, len(need))
+	for i, loc := range need {
+		internal[i] = invlistLoc{listID: loc.ListID, nvec: loc.Nvec, offset: loc.Offset, bytes: loc.Bytes}
+	}
+	merged := mergeInvlistRanges(internal, seekGapBytes)
+	out := make([]MergedRange, len(merged))
+	for i, rg := range merged {
+		lists := make([]InvlistLoc, len(rg.lists))
+		for j, loc := range rg.lists {
+			lists[j] = InvlistLoc{ListID: loc.listID, Nvec: loc.nvec, Offset: loc.offset, Bytes: loc.bytes}
+		}
+		out[i] = MergedRange{Start: rg.start, Length: rg.length, Lists: lists}
+	}
+	return out
+}
+
+// DecodeInvlistBytes turns one list's raw codes+ids into an install payload.
+func DecodeInvlistBytes(loc InvlistLoc, buf []byte, codeSize uint64) (InvlistPayload, error) {
+	return decodeInvlistPayload(invlistLoc{
+		listID: loc.ListID,
+		nvec:   loc.Nvec,
+		offset: loc.Offset,
+		bytes:  loc.Bytes,
+	}, buf, codeSize)
 }
 
 func decodeInvlistPayload(loc invlistLoc, buf []byte, codeSize uint64) (InvlistPayload, error) {

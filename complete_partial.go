@@ -9,11 +9,25 @@ package faiss
 import "C"
 import (
 	"fmt"
+	"runtime"
 	"unsafe"
 )
 
 func completeLastError() error {
 	return fmt.Errorf("%s", C.GoString(C.gofaiss_complete_last_error()))
+}
+
+// ReadIndexBytes deserializes an index from an in-memory Faiss file image.
+func ReadIndexBytes(data []byte, ioflags int) (*IndexImpl, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("ReadIndexBytes: empty")
+	}
+	var raw unsafe.Pointer
+	if C.gofaiss_read_index_bytes(unsafe.Pointer(&data[0]), C.size_t(len(data)), C.int(ioflags), &raw) != 0 {
+		return nil, completeLastError()
+	}
+	idx := faissIndex{idx: (*C.FaissIndex)(raw)}
+	return &IndexImpl{&idx}, nil
 }
 
 // ReadIndexHeaderRam loads an IVF quantizer/header and empty ArrayInvertedLists.
@@ -65,4 +79,37 @@ func IVFResidentListBytes(idx Index) (int64, error) {
 		return 0, completeLastError()
 	}
 	return n, nil
+}
+
+// adoptInvlistBlock hands one mmap block to the IVF index.
+// A nil error means C++ owns the block (or already unmapped it).
+// On error, the block is unmapped here when C++ did not take it.
+func adoptInvlistBlock(idx Index, block []byte, spans []C.GofaissInvlistSpan) error {
+	if idx == nil {
+		mapFree(block)
+		return fmt.Errorf("adopt_invlist_block: nil index")
+	}
+	if len(block) == 0 {
+		return fmt.Errorf("adopt_invlist_block: empty block")
+	}
+	var sp *C.GofaissInvlistSpan
+	if len(spans) > 0 {
+		sp = &spans[0]
+	}
+	rc := C.gofaiss_adopt_invlist_block(
+		unsafe.Pointer(idx.cPtr()),
+		unsafe.Pointer(&block[0]),
+		C.size_t(len(block)),
+		sp,
+		C.size_t(len(spans)),
+	)
+	runtime.KeepAlive(block)
+	runtime.KeepAlive(spans)
+	if rc == 0 {
+		return nil
+	}
+	if rc == -1 {
+		mapFree(block)
+	}
+	return completeLastError()
 }

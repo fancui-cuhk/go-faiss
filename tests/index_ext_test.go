@@ -648,6 +648,9 @@ func TestReadThenInstallInvlistsIsNoopOnReabsorb(t *testing.T) {
 	if header.Ntotal() != before {
 		t.Fatalf("re-install should be a no-op, ntotal %d -> %d", before, header.Ntotal())
 	}
+	faiss.ReleaseInvlistPayloads(payloads)
+	faiss.ReleaseInvlistPayloads(again)
+	faiss.ReleaseInvlistPayloads(payloads)
 
 	if err := faiss.TuneIVFSearch(header, 3, faiss.IVFParallelLists); err != nil {
 		t.Fatal(err)

@@ -7,11 +7,13 @@ package faiss
 #include <faiss/c_api/IndexIVFFlat_c.h>
 #include <faiss/c_api/MetaIndexes_c.h>
 #include <faiss/c_api/impl/AuxIndexStructures_c.h>
+#include "complete_partial.h"
 */
 import "C"
 import (
 	"fmt"
 	"runtime"
+	"sync"
 	"unsafe"
 )
 
@@ -284,28 +286,68 @@ func SearchPreassigned(idx Index, x []float32, k int64, clusterIDs []int64, cent
 
 // InvlistPayload is one inverted list already in process memory (codes + ids).
 // Codes is nvec * code_size bytes; IDs is nvec labels.
+// Codes may alias an mmap read buffer. ReleaseInvlistPayloads drops that
+// buffer; the faiss index keeps its own copy.
 type InvlistPayload struct {
-	ListID int64
-	Codes  []byte
-	IDs    []int64
+	ListID  int64
+	Codes   []byte
+	IDs     []int64
+	release *payloadRelease
+}
+
+type payloadRelease struct {
+	once sync.Once
+	fn   func()
+}
+
+func (p *payloadRelease) call() {
+	if p == nil || p.fn == nil {
+		return
+	}
+	p.once.Do(p.fn)
+}
+
+// ReleaseInvlistPayloads drops read buffers held by lists.
+// Safe to call more than once. Does not free lists already installed in faiss.
+func ReleaseInvlistPayloads(lists []InvlistPayload) {
+	for i := range lists {
+		lists[i].Codes = nil
+		lists[i].IDs = nil
+	}
+	for i := range lists {
+		if lists[i].release != nil {
+			lists[i].release.call()
+			lists[i].release = nil
+		}
+	}
+}
+
+// ReadInvlistMeta reads only the invlist table (not list payloads).
+// nbytes[i] is the on-disk payload of ids[i]: nvec*codeSize + nvec*8.
+func ReadInvlistMeta(fname string) (ids []int64, nbytes []int64, err error) {
+	f, oDirect, err := openInvlist(fname)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ReadInvlistMeta: open %s: %w", fname, err)
+	}
+	defer f.Close()
+	_, codeSize, _, idsizes, _, err := readInvlistTable(f, oDirect)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ReadInvlistMeta: %s %w", fname, err)
+	}
+	ids = make([]int64, 0, len(idsizes)/2)
+	nbytes = make([]int64, 0, len(idsizes)/2)
+	for i := 0; i+1 < len(idsizes); i += 2 {
+		nvec := idsizes[i+1]
+		ids = append(ids, int64(idsizes[i]))
+		nbytes = append(nbytes, int64(nvec*codeSize+nvec*8))
+	}
+	return ids, nbytes, nil
 }
 
 // ListInvlistIDs returns inverted-list IDs in on-disk (offset) order.
 func ListInvlistIDs(fname string) ([]int64, error) {
-	f, oDirect, err := openInvlist(fname)
-	if err != nil {
-		return nil, fmt.Errorf("ListInvlistIDs: open %s: %w", fname, err)
-	}
-	defer f.Close()
-	_, _, _, idsizes, _, err := readInvlistTable(f, oDirect)
-	if err != nil {
-		return nil, fmt.Errorf("ListInvlistIDs: %s %w", fname, err)
-	}
-	out := make([]int64, 0, len(idsizes)/2)
-	for i := 0; i+1 < len(idsizes); i += 2 {
-		out = append(out, int64(idsizes[i]))
-	}
-	return out, nil
+	ids, _, err := ReadInvlistMeta(fname)
+	return ids, err
 }
 
 // ReadInvlists reads selected lists from `{base}_invlists_{fid}` in Go.
@@ -335,6 +377,7 @@ func ReadInvlistsGap(invlistBasePath string, listIDs, fileIDs []int64, seekGapBy
 	for fid, wanted := range byFile {
 		part, partSt, err := readInvlistFile(fmt.Sprintf("%s_invlists_%d", invlistBasePath, fid), wanted, seekGapBytes)
 		if err != nil {
+			ReleaseInvlistPayloads(out)
 			return nil, st, err
 		}
 		out = append(out, part...)
@@ -343,75 +386,82 @@ func ReadInvlistsGap(invlistBasePath string, listIDs, fileIDs []int64, seekGapBy
 	return out, st, nil
 }
 
-// InstallInvlists copies already-in-memory lists into the resident IVF.
-// Lists that already have entries are skipped. ntotal becomes the sum of
-// loaded list sizes. Does not read disk.
+// InstallInvlists copies already-in-memory lists into one mmap block and
+// views that block from the resident IVF. Lists that already have entries
+// are skipped (the fresh block is unmapped). ntotal becomes the sum of
+// loaded list sizes. Does not read disk. The caller still owns lists until
+// ReleaseInvlistPayloads.
 func InstallInvlists(idx Index, lists []InvlistPayload) error {
 	if idx == nil {
 		return fmt.Errorf("InstallInvlists: nil index")
 	}
-	n := len(lists)
-	if n == 0 {
+	if len(lists) == 0 {
 		return nil
 	}
-	// CGO forbids a Go pointer to a Go pointer. Pointer tables and
-	// codes/ids live in C memory for the duration of the call.
-	cListIDs := (*C.idx_t)(C.calloc(C.size_t(n), C.size_t(unsafe.Sizeof(C.idx_t(0)))))
-	cNvecs := (*C.size_t)(C.calloc(C.size_t(n), C.size_t(unsafe.Sizeof(C.size_t(0)))))
-	cCodePtrs := (**C.uint8_t)(C.calloc(C.size_t(n), C.size_t(unsafe.Sizeof(uintptr(0)))))
-	cIDPtrs := (**C.idx_t)(C.calloc(C.size_t(n), C.size_t(unsafe.Sizeof(uintptr(0)))))
-	if cListIDs == nil || cNvecs == nil || cCodePtrs == nil || cIDPtrs == nil {
-		C.free(unsafe.Pointer(cListIDs))
-		C.free(unsafe.Pointer(cNvecs))
-		C.free(unsafe.Pointer(cCodePtrs))
-		C.free(unsafe.Pointer(cIDPtrs))
-		return fmt.Errorf("InstallInvlists: out of memory")
+	const idAlign = 8
+	type packed struct {
+		listID  int64
+		nvec    int
+		codeOff int
+		idOff   int
+		codes   []byte
+		ids     []int64
 	}
-	defer C.free(unsafe.Pointer(cListIDs))
-	defer C.free(unsafe.Pointer(cNvecs))
-	defer C.free(unsafe.Pointer(cCodePtrs))
-	defer C.free(unsafe.Pointer(cIDPtrs))
-
-	listIDs := unsafe.Slice(cListIDs, n)
-	nvecs := unsafe.Slice(cNvecs, n)
-	codePtrs := unsafe.Slice(cCodePtrs, n)
-	idPtrs := unsafe.Slice(cIDPtrs, n)
-	for i, l := range lists {
-		listIDs[i] = C.idx_t(l.ListID)
+	drafts := make([]packed, 0, len(lists))
+	cursor := 0
+	for _, l := range lists {
 		if len(l.IDs) == 0 {
 			continue
 		}
 		if len(l.Codes) == 0 {
 			return fmt.Errorf("InstallInvlists: list %d has ids but no codes", l.ListID)
 		}
-		codeBytes := len(l.Codes)
-		idBytes := len(l.IDs) * int(unsafe.Sizeof(int64(0)))
-		cCodes := C.malloc(C.size_t(codeBytes))
-		cIDs := C.malloc(C.size_t(idBytes))
-		if cCodes == nil || cIDs == nil {
-			C.free(cCodes)
-			C.free(cIDs)
-			return fmt.Errorf("InstallInvlists: out of memory")
+		codeOff := cursor
+		if cursor > int(^uint(0)>>1)-len(l.Codes) {
+			return fmt.Errorf("InstallInvlists: payload too large")
 		}
-		copy(unsafe.Slice((*byte)(cCodes), codeBytes), l.Codes)
-		copy(unsafe.Slice((*byte)(cIDs), idBytes), unsafe.Slice((*byte)(unsafe.Pointer(&l.IDs[0])), idBytes))
-		nvecs[i] = C.size_t(len(l.IDs))
-		codePtrs[i] = (*C.uint8_t)(cCodes)
-		idPtrs[i] = (*C.idx_t)(cIDs)
-		defer C.free(cCodes)
-		defer C.free(cIDs)
+		cursor += len(l.Codes)
+		if rem := cursor % idAlign; rem != 0 {
+			cursor += idAlign - rem
+		}
+		idBytes := len(l.IDs) * idAlign
+		if cursor > int(^uint(0)>>1)-idBytes {
+			return fmt.Errorf("InstallInvlists: payload too large")
+		}
+		drafts = append(drafts, packed{
+			listID:  l.ListID,
+			nvec:    len(l.IDs),
+			codeOff: codeOff,
+			idOff:   cursor,
+			codes:   l.Codes,
+			ids:     l.IDs,
+		})
+		cursor += idBytes
 	}
-	if c := C.faiss_ivf_install_invlists(
-		idx.cPtr(),
-		cListIDs,
-		C.size_t(n),
-		cNvecs,
-		cCodePtrs,
-		cIDPtrs,
-	); c != 0 {
-		return getLastError()
+	if len(drafts) == 0 {
+		return nil
+	}
+	block, err := mapAlloc(cursor)
+	if err != nil {
+		return fmt.Errorf("InstallInvlists: %w", err)
+	}
+	spans := make([]C.GofaissInvlistSpan, len(drafts))
+	for i, d := range drafts {
+		copy(block[d.codeOff:d.codeOff+len(d.codes)], d.codes)
+		idBytes := len(d.ids) * idAlign
+		raw := unsafe.Slice((*byte)(unsafe.Pointer(&d.ids[0])), idBytes)
+		copy(block[d.idOff:d.idOff+idBytes], raw)
+		spans[i] = C.GofaissInvlistSpan{
+			list_id:  C.int64_t(d.listID),
+			nvec:     C.size_t(d.nvec),
+			code_off: C.size_t(d.codeOff),
+			id_off:   C.size_t(d.idOff),
+		}
 	}
 	runtime.KeepAlive(lists)
+	if err := adoptInvlistBlock(idx, block, spans); err != nil {
+		return fmt.Errorf("InstallInvlists: %w", err)
+	}
 	return nil
 }
 

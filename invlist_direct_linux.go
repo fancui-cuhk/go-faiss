@@ -37,6 +37,31 @@ func alignedSlice(n int) []byte {
 	return raw[pad : pad+n]
 }
 
+// ReadIndexDirect reads path with O_DIRECT and deserializes the bytes.
+// It does not fall back to a buffered read.
+func ReadIndexDirect(path string, ioflags int) (*IndexImpl, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_DIRECT, 0)
+	if err != nil {
+		return nil, fmt.Errorf("ReadIndexDirect: open %s: %w", path, err)
+	}
+	defer f.Close()
+	if oDirectLogged.CompareAndSwap(false, true) {
+		fmt.Fprintln(os.Stderr, "ReadIndex: O_DIRECT enabled")
+	}
+	st, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("ReadIndexDirect: stat %s: %w", path, err)
+	}
+	if st.Size() > int64(^uint(0)>>1) {
+		return nil, fmt.Errorf("ReadIndexDirect: %s too large", path)
+	}
+	buf, err := readAtDirect(f, 0, int(st.Size()))
+	if err != nil {
+		return nil, fmt.Errorf("ReadIndexDirect: %s: %w", path, err)
+	}
+	return ReadIndexBytes(buf, ioflags)
+}
+
 func readAtDirect(f *os.File, off int64, n int) ([]byte, error) {
 	aoff := off - off%ioAlign
 	extra := int(off - aoff)
