@@ -18,12 +18,17 @@ int gofaiss_read_index_header_ram(const char* fname, void** p_out);
 
 /* Copy selected lists from `{complete}` / `{complete}.ivfdata` into dest RAM.
  * n_lists==0 copies every still-empty list. Already-loaded lists are skipped.
+ * Return 2 when a full copy (n_lists==0) stops early because a query asked it
+ * to yield. Lists copied before the yield stay loaded.
  */
 int gofaiss_absorb_lists_from_complete(
 		void* dest,
 		const int64_t* list_ids,
 		size_t n_lists,
 		const char* complete_path);
+
+/* Nonzero: full-index copies should stop so a query absorb can use the disk. */
+void gofaiss_set_absorb_yield(int yield_to_query);
 
 /* Codes+ids bytes in RAM inverted lists. Uses invlists->nlist, not ivf->nlist. */
 int64_t gofaiss_ivf_resident_list_bytes(void* index);

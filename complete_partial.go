@@ -8,10 +8,15 @@ package faiss
 */
 import "C"
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"unsafe"
 )
+
+// ErrAbsorbYielded means a full-index copy stopped so a query absorb can run.
+// Lists copied before the stop stay loaded; the caller should retry.
+var ErrAbsorbYielded = errors.New("absorb yielded to query")
 
 func completeLastError() error {
 	return fmt.Errorf("%s", C.GoString(C.gofaiss_complete_last_error()))
@@ -43,6 +48,16 @@ func ReadIndexHeaderRam(filename string) (*IndexImpl, error) {
 	return &IndexImpl{&idx}, nil
 }
 
+// SetAbsorbYield asks in-flight full-index copies to stop. Query absorbs
+// (n_lists > 0) are not interrupted. Pass false when no query absorb is running.
+func SetAbsorbYield(yieldToQuery bool) {
+	v := C.int(0)
+	if yieldToQuery {
+		v = 1
+	}
+	C.gofaiss_set_absorb_yield(v)
+}
+
 // AbsorbListsFromComplete copies selected inverted lists from a complete IVF
 // file into dest (header-only RAM index). Empty listIDs copies every still-empty
 // list. Lists that already have entries are skipped.
@@ -57,12 +72,16 @@ func AbsorbListsFromComplete(dest Index, listIDs []int64, completePath string) e
 	if n > 0 {
 		cLists = (*C.int64_t)(unsafe.Pointer(&listIDs[0]))
 	}
-	if C.gofaiss_absorb_lists_from_complete(
+	rc := C.gofaiss_absorb_lists_from_complete(
 		unsafe.Pointer(dest.cPtr()),
 		cLists,
 		C.size_t(n),
 		cpath,
-	) != 0 {
+	)
+	if rc == 2 {
+		return ErrAbsorbYielded
+	}
+	if rc != 0 {
 		return completeLastError()
 	}
 	return nil

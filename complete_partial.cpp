@@ -8,6 +8,9 @@
 
 #include <faiss/impl/maybe_owned_vector.h>
 
+#include <atomic>
+#include <chrono>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <sys/mman.h>
@@ -17,6 +20,22 @@
 namespace {
 
 thread_local std::string g_err;
+std::atomic<int> g_absorb_yield{0};
+
+// #region agent log
+void agent_dbg(const char* hyp, const char* loc, const char* msg, const std::string& data) {
+	FILE* f = std::fopen("/mnt/nvme/Ember-Vector-Search/.cursor/debug-d62b3e.log", "a");
+	if (f == nullptr) {
+		return;
+	}
+	auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::system_clock::now().time_since_epoch()).count();
+	std::fprintf(f,
+			"{\"sessionId\":\"d62b3e\",\"hypothesisId\":\"%s\",\"location\":\"%s\",\"message\":\"%s\",\"data\":%s,\"timestamp\":%lld}\n",
+			hyp, loc, msg, data.c_str(), static_cast<long long>(ms));
+	std::fclose(f);
+}
+// #endregion
 
 struct MmapBlock final : faiss::MaybeOwnedVectorOwner {
 	void* p = nullptr;
@@ -101,6 +120,10 @@ extern "C" int gofaiss_read_index_header_ram(const char* fname, void** p_out) {
 	}
 }
 
+extern "C" void gofaiss_set_absorb_yield(int yield_to_query) {
+	g_absorb_yield.store(yield_to_query ? 1 : 0, std::memory_order_release);
+}
+
 extern "C" int gofaiss_absorb_lists_from_complete(
 		void* dest,
 		const int64_t* list_ids,
@@ -128,16 +151,29 @@ extern "C" int gofaiss_absorb_lists_from_complete(
 			return -1;
 		}
 
+		const bool full_copy = (n_lists == 0);
+		if (full_copy && g_absorb_yield.load(std::memory_order_acquire) != 0) {
+			return 2;
+		}
+
+		auto t_read0 = std::chrono::steady_clock::now();
 		std::unique_ptr<faiss::Index> src_idx(
 				faiss::read_index(complete_path, complete_read_flags(complete_path)));
+		auto read_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - t_read0).count();
 		auto* src = dynamic_cast<faiss::IndexIVF*>(src_idx.get());
 		if (src == nullptr || src->invlists == nullptr) {
 			g_err = "absorb_lists_from_complete: source is not IVF";
 			return -1;
 		}
 		faiss::InvertedLists* sil = src->invlists;
+		// #region agent log
+		agent_dbg("H3", "complete_partial.cpp:absorb", "read_index done",
+				"{\"read_ms\":" + std::to_string(read_ms) + ",\"n_in\":" + std::to_string(n_lists) + "}");
+		// #endregion
 
 		std::vector<int64_t> all;
+		size_t n_in = n_lists;
 		if (n_lists == 0) {
 			all.resize(ivf->nlist);
 			for (size_t i = 0; i < ivf->nlist; i++) {
@@ -151,7 +187,13 @@ extern "C" int gofaiss_absorb_lists_from_complete(
 			return -1;
 		}
 
+		auto t_copy0 = std::chrono::steady_clock::now();
+		size_t copied_bytes = 0;
 		for (size_t i = 0; i < n_lists; i++) {
+			if (full_copy && g_absorb_yield.load(std::memory_order_acquire) != 0) {
+				refresh_ntotal(ivf, dst);
+				return 2;
+			}
 			auto lid = static_cast<size_t>(list_ids[i]);
 			if (list_ids[i] < 0 || lid >= dst->nlist || lid >= sil->nlist) {
 				continue;
@@ -166,9 +208,17 @@ extern "C" int gofaiss_absorb_lists_from_complete(
 			const uint8_t* codes = sil->get_codes(lid);
 			const faiss::idx_t* ids = sil->get_ids(lid);
 			dst->add_entries(lid, ls, ids, codes);
+			copied_bytes += ls * (dst->code_size + sizeof(faiss::idx_t));
 			sil->release_codes(lid, codes);
 			sil->release_ids(lid, ids);
 		}
+		auto copy_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - t_copy0).count();
+		// #region agent log
+		agent_dbg("H4", "complete_partial.cpp:absorb", "list copy done",
+				"{\"copy_ms\":" + std::to_string(copy_ms) + ",\"n_in\":" + std::to_string(n_in) +
+				",\"n_lists\":" + std::to_string(n_lists) + ",\"copied_bytes\":" + std::to_string(copied_bytes) + "}");
+		// #endregion
 		size_t tot = 0;
 		for (size_t i = 0; i < dst->nlist; i++) {
 			tot += dst->list_size(i);
